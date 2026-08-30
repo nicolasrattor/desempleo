@@ -1,0 +1,12 @@
+# Microdatos ENE: ~1,2 GB, se descargan del INE y no se versionan
+data/
+*.parquet
+
+# Temporales
+__pycache__/
+*.pyc
+.Rhistory
+.RData
+.Rproj.user/
+~$*
+.DS_Store
