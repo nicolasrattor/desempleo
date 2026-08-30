@@ -28,7 +28,7 @@ R necesita `arrow`, `dplyr` y `openxlsx`; Python necesita `pandas`, `pyarrow` y 
 
 `desocupados_mjj2026.R` es el script de referencia, escrito en R con `arrow`, `dplyr` y `openxlsx`. Se ejecuta desde la raíz del repositorio y produce el Excel ahí mismo.
 
-`desocupados_mjj2026.xlsx` es el producto: 23 hojas con todos los tabulados, con los porcentajes y las tasas escritos como fórmulas vivas para que recalculen si se edita algún insumo.
+`desocupados_mjj2026.xlsx` es el producto: 24 hojas con todos los tabulados, con los porcentajes y las tasas escritos como fórmulas vivas para que recalculen si se edita algún insumo.
 
 `build_xlsx.py` es un espejo en Python de la misma lógica. Existe porque el entorno donde se generó el archivo no tenía R instalado, y fue lo que efectivamente construyó el `.xlsx` versionado aquí. Las dos rutas producen el mismo resultado; el script R es el que conviene revisar y mantener.
 
@@ -72,15 +72,17 @@ Rama de actividad, ocupación, categoría ocupacional y formalidad del empleo an
 
 ## Hojas del Excel
 
-El archivo abre con `Notas` (fuente, definiciones, variables y supuestos) y `Resumen` (PET, fuerza de trabajo, ocupados, desocupados y tasas). Siguen las hojas de caracterización transversal: `Sexo`, `Edad`, `Region`, `Educacion`, `Nacionalidad`, `Pueblo_indigena`, `Jefatura_hogar`, `Condicion`, `Duracion_busqueda`, `Duracion_cesantia`, `Motivo_termino`, `Motivo_despido`, `Motivo_renuncia`, `Jornada_buscada` y `Metodos_busqueda`. Cierran las seis hojas del panel: `Panel_situacion_2025`, `Panel_rama_2025`, `Panel_contrato_2025`, `Panel_categoria_2025`, `Panel_formalidad_2025` y `Panel_sector_inst_2025`.
+El archivo abre con `Notas` (fuente, definiciones, variables y supuestos) y `Resumen` (PET, fuerza de trabajo, ocupados, desocupados y tasas). Siguen las hojas de caracterización transversal: `Sexo`, `Edad`, `Region`, `Provincia`, `Educacion`, `Nacionalidad`, `Pueblo_indigena`, `Jefatura_hogar`, `Condicion`, `Duracion_busqueda`, `Duracion_cesantia`, `Motivo_termino`, `Motivo_despido`, `Motivo_renuncia`, `Jornada_buscada` y `Metodos_busqueda`. Cierran las seis hojas del panel: `Panel_situacion_2025`, `Panel_rama_2025`, `Panel_contrato_2025`, `Panel_categoria_2025`, `Panel_formalidad_2025` y `Panel_sector_inst_2025`.
 
 Las hojas que se apoyan en una variable que particiona toda la fuerza de trabajo incluyen además la columna de tasa de desocupación. `Metodos_busqueda` es de respuesta múltiple, por lo que sus porcentajes no suman cien y el denominador es el total de personas desocupadas.
+
+La hoja `Provincia` merece una advertencia aparte. La ENE tiene representatividad regional, no provincial: la muestra no está diseñada para producir estimaciones a ese nivel y en más de la mitad de las provincias el número de casos de personas desocupadas es inferior a cincuenta, lo que deja tasas con un error muestral alto. Son cifras de elaboración propia, útiles como exploración pero no como estimaciones oficiales. Aparecen 52 de las 56 provincias del país: Isla de Pascua y Palena no forman parte de la muestra del trimestre, y otras dos no registran personas desocupadas en ella.
 
 ## Dashboard
 
 `dashboard_desempleo.html` es un dashboard autocontenido titulado "Desempleo en Chile, más allá del 9,5%". Se abre en cualquier navegador con doble clic; los datos van embebidos como JSON dentro del propio archivo y lo único que carga desde internet es la librería de gráficos Chart.js.
 
-La portada muestra la evolución conjunta de la tasa de desocupación y del número de personas desocupadas en los 197 trimestres móviles disponibles, desde EFM 2010 hasta MJJ 2026, con selectores de rango temporal. El resto del documento recorre en cuatro secciones los mismos tabulados del Excel: quiénes están desocupados (sexo, edad, región, educación, nacionalidad, pueblo indígena, jefatura de hogar y condición), cuánto llevan buscando (duración de la búsqueda y de la cesantía, métodos y jornada buscada), por qué terminó su último empleo (motivo de término, de despido y de renuncia) y de dónde vienen según el módulo panel (situación en 2025, rama, contrato, categoría ocupacional, formalidad y sector institucional). Cierra con la nota metodológica.
+La portada muestra la evolución conjunta de la tasa de desocupación y del número de personas desocupadas en los 197 trimestres móviles disponibles, desde EFM 2010 hasta MJJ 2026, con selectores de rango temporal. El resto del documento recorre en cuatro secciones los mismos tabulados del Excel: quiénes están desocupados (sexo, edad, región, provincia, educación, nacionalidad, pueblo indígena, jefatura de hogar y condición), cuánto llevan buscando (duración de la búsqueda y de la cesantía, métodos y jornada buscada), por qué terminó su último empleo (motivo de término, de despido y de renuncia) y de dónde vienen según el módulo panel (situación en 2025, rama, contrato, categoría ocupacional, formalidad y sector institucional). Cierra con la nota metodológica.
 
 `build_dashboard.py` es el script que lo construye. Se ejecuta desde la raíz del repositorio con `python3 build_dashboard.py` y necesita `openpyxl`, `pandas` y `pyarrow`. Lee los tabulados desde `desocupados_mjj2026.xlsx` y recalcula la serie histórica recorriendo todas las particiones `ano=*/mes_central=*`. La serie no usa la variable `ft` porque solo existe en los archivos recientes: la fuerza de trabajo se reconstruye como la suma de personas ocupadas y desocupadas (`activ` 1 y 2), que es exactamente su definición. Los porcentajes que en el Excel son fórmulas se recalculan en Python desde los valores, de modo que el dashboard no depende de que el archivo haya sido abierto por Excel o LibreOffice.
 

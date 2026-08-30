@@ -251,6 +251,17 @@ section{scroll-margin-top:20px}
     <div class="card"><h3>Sexo</h3><p class="hint">Tasa de desocupación, %</p><div class="cw" style="height:170px"><canvas id="c_sexo"></canvas></div></div>
     <div class="card"><h3>Tramo de edad</h3><p class="hint">Tasa de desocupación, %</p><div class="cw" style="height:230px"><canvas id="c_edad"></canvas></div></div>
     <div class="card span"><h3>Región</h3><p class="hint">Tasa de desocupación, % — ordenada de mayor a menor</p><div class="cw" style="height:300px"><canvas id="c_region"></canvas></div></div>
+    <div class="card span"><h3>Provincia</h3>
+      <p class="hint">Tasa de desocupación, % — la ENE tiene representatividad regional, no provincial: leer con cautela</p>
+      <div class="tabs" id="provTabs">
+        <div class="tab on" data-min="50">Solo provincias con 50+ casos</div>
+        <div class="tab" data-min="0">Las 52 provincias</div>
+      </div>
+      <div id="t_prov"></div>
+      <p class="hint" style="margin:12px 0 0">Las provincias marcadas con ▵ tienen menos de 50 casos muestrales de personas
+        desocupadas: su tasa tiene un error muestral alto y no debe leerse como una estimación puntual. Isla de Pascua y
+        Palena no aparecen porque no forman parte de la muestra del trimestre.</p>
+    </div>
     <div class="card"><h3>Nivel educacional</h3><div id="t_educ"></div></div>
     <div class="card"><h3>Condición: cesantes y quienes buscan por primera vez</h3><div id="t_cond"></div></div>
     <div class="card"><h3>Nacionalidad</h3><div id="t_nac"></div></div>
@@ -370,13 +381,15 @@ function drawSerie(r){
    scales:{
      x:{grid:{display:false},border:{color:LINE},
         ticks:{maxTicksLimit:pocos?12:12,autoSkip:!pocos,maxRotation:0}},
-     y:{position:'left',grid:{color:LINE},border:{display:false},ticks:{callback:v=>v+'%'},
+     y:{position:'left',grid:{color:LINE},border:{display:false},
+        // En rangos cortos el eje se autoescala y saca ticks con dos o tres decimales: un decimal basta.
+        ticks:{callback:v=>(pocos? P(v): v)+'%'},
         title:{display:true,text:'Tasa de desocupación',color:A2,font:{size:11,weight:'600'}}},
      y1:{position:'right',grid:{display:false},border:{display:false},ticks:{callback:v=>F(v/1000)+'k'},
         title:{display:true,text:'N° de personas desocupadas',color:A1,font:{size:11,weight:'600'}}}},
    plugins:{...baseOpts.plugins,legend:{display:true,position:'top',align:'end',labels:{boxWidth:10,boxHeight:10,usePointStyle:true,pointStyle:'circle'}},
      tooltip:{...baseOpts.plugins.tooltip,callbacks:{
-       title:it=>r.mes0? `Mes ${it[0].dataIndex} · ${it[0].label}` : it[0].label,
+       title:it=>r.mesIni!=null? `Mes ${it[0].dataIndex + r.mesIni} · ${it[0].label}` : it[0].label,
        label:c=>c.datasetIndex===1? 'Tasa: '+P(c.raw)+'%' : 'Desocupados: '+F(c.raw)}}}}});
   const pri = s[0], ult = s[s.length-1];
   const dif = ult.td - pri.td, difn = ult.d - pri.d;
@@ -394,10 +407,10 @@ const rangos=[
   {from:[2016,1], lab:'Últimos 10 años'},
   {from:[2020,1], lab:'Desde la pandemia'},
   {from:[2024,1], lab:'Últimos 3 años'},
-  {from:[2026,1], lab:'Gobierno Kast', cls:'kast', mes0:true,
-   cap:'El Gobierno de José Antonio Kast asumió el 11 de marzo de 2026. El mes 0 es DEF 2026 '+
-       '(diciembre-enero-febrero), el último dato previo a la asunción; los cinco meses acumulados '+
-       'llegan hasta MJJ 2026, publicado por el INE el 28 de agosto de 2026.'}
+  {from:[2026,2], lab:'Gobierno Kast', cls:'kast', mesIni:1,
+   cap:'El Gobierno de José Antonio Kast asumió el 11 de marzo de 2026. Se muestran los cinco '+
+       'trimestres móviles del período, desde EFM 2026 hasta MJJ 2026, dato publicado por el INE '+
+       'el 28 de agosto de 2026.'}
 ];
 document.getElementById('rangeTabs').innerHTML = rangos.map((r,i)=>
   `<div class="tab ${r.cls||''}${i?'':' on'}" data-i="${i}">${r.lab}</div>`).join('');
@@ -413,6 +426,30 @@ const ed = D.Edad.rows;
 barH('c_edad', ed.map(r=>r.cat), ed.map(r=>r.tasa), A1);
 const rg = D.Region.rows.slice().sort((a,b)=>b.tasa-a.tasa);
 barH('c_region', rg.map(r=>r.cat.replace(/^Región de(l)? /,'')), rg.map(r=>r.tasa), A1);
+/* Provincias: tabla propia en dos columnas, ordenada por tasa. Las provincias con pocos casos
+   se marcan y pueden ocultarse, porque su tasa es demasiado ruidosa para compararla. */
+function pintarProv(min){
+  const rows = D.Provincia.rows.filter(r=>r.casos>=min).sort((a,b)=>b.tasa-a.tasa);
+  const max = Math.max(...rows.map(r=>r.tasa));
+  const mitad = Math.ceil(rows.length/2);
+  const col = rs => `<table><thead><tr><th>Provincia</th><th style="width:30%"></th>
+      <th class="n">Tasa</th><th class="n">Casos</th></tr></thead><tbody>` +
+    rs.map(r=>{const flojo = r.casos<50;
+      const nom = r.cat.replace(/ \\(([^)]+)\\)$/, ' <span style="color:var(--muted)">· $1</span>');
+      return `<tr${flojo?' style="opacity:.6"':''}><td>${nom}${flojo?' <span title="menos de 50 casos" style="color:var(--a4)">▵</span>':''}</td>
+        <td><div class="barwrap"><div class="bar" style="width:${Math.max(2,r.tasa/max*100)}%;
+          background:${flojo?'#b9c2cb':A1}"></div></div></td>
+        <td class="n"><b>${P(r.tasa)}%</b></td>
+        <td class="n" style="color:var(--muted)">${F(r.casos)}</td></tr>`}).join('') + `</tbody></table>`;
+  document.getElementById('t_prov').innerHTML =
+    `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:0 26px">
+       ${col(rows.slice(0,mitad))}${col(rows.slice(mitad))}</div>`;
+}
+document.querySelectorAll('#provTabs .tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('#provTabs .tab').forEach(x=>x.classList.remove('on'));
+  t.classList.add('on'); pintarProv(+t.dataset.min);});
+pintarProv(50);
+
 tabla('t_educ','Educacion',{head:'% desoc.'});
 tabla('t_cond','Condicion',{color:A2});
 tabla('t_nac','Nacionalidad',{color:A3});

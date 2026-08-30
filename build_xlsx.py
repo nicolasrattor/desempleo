@@ -21,6 +21,63 @@ lab_region = {15:"Arica y Parinacota",1:"Tarapacá",2:"Antofagasta",3:"Atacama",
               5:"Valparaíso",13:"Metropolitana de Santiago",6:"O'Higgins",7:"Maule",16:"Ñuble",
               8:"Biobío",9:"La Araucanía",14:"Los Ríos",10:"Los Lagos",11:"Aysén",12:"Magallanes"}
 orden_region = [15,1,2,3,4,5,13,6,7,16,8,9,14,10,11,12]
+lab_provincia = {
+    151: "Arica (Arica y Parinacota)",
+    152: "Parinacota (Arica y Parinacota)",
+    11: "Iquique (Tarapacá)",
+    14: "Tamarugal (Tarapacá)",
+    21: "Antofagasta (Antofagasta)",
+    22: "El Loa (Antofagasta)",
+    23: "Tocopilla (Antofagasta)",
+    31: "Copiapó (Atacama)",
+    32: "Chañaral (Atacama)",
+    33: "Huasco (Atacama)",
+    41: "Elqui (Coquimbo)",
+    42: "Choapa (Coquimbo)",
+    43: "Limarí (Coquimbo)",
+    51: "Valparaíso (Valparaíso)",
+    53: "Los Andes (Valparaíso)",
+    54: "Petorca (Valparaíso)",
+    55: "Quillota (Valparaíso)",
+    56: "San Antonio (Valparaíso)",
+    57: "San Felipe de Aconcagua (Valparaíso)",
+    58: "Marga Marga (Valparaíso)",
+    131: "Santiago (Metropolitana)",
+    132: "Cordillera (Metropolitana)",
+    133: "Chacabuco (Metropolitana)",
+    134: "Maipo (Metropolitana)",
+    135: "Melipilla (Metropolitana)",
+    136: "Talagante (Metropolitana)",
+    61: "Cachapoal (O'Higgins)",
+    62: "Cardenal Caro (O'Higgins)",
+    63: "Colchagua (O'Higgins)",
+    71: "Talca (Maule)",
+    72: "Cauquenes (Maule)",
+    73: "Curicó (Maule)",
+    74: "Linares (Maule)",
+    161: "Diguillín (Ñuble)",
+    162: "Itata (Ñuble)",
+    163: "Punilla (Ñuble)",
+    81: "Concepción (Biobío)",
+    82: "Arauco (Biobío)",
+    83: "Biobío (Biobío)",
+    91: "Cautín (La Araucanía)",
+    92: "Malleco (La Araucanía)",
+    141: "Valdivia (Los Ríos)",
+    142: "Ranco (Los Ríos)",
+    101: "Llanquihue (Los Lagos)",
+    102: "Chiloé (Los Lagos)",
+    103: "Osorno (Los Lagos)",
+    111: "Coyhaique (Aysén)",
+    112: "Aysén (Aysén)",
+    113: "Capitán Prat (Aysén)",
+    114: "General Carrera (Aysén)",
+    121: "Magallanes (Magallanes)",
+    122: "Antártica Chilena (Magallanes)",
+    123: "Tierra del Fuego (Magallanes)",
+    124: "Última Esperanza (Magallanes)",
+}
+orden_provincia = [151, 152, 11, 14, 21, 22, 23, 31, 32, 33, 41, 42, 43, 51, 53, 54, 55, 56, 57, 58, 131, 132, 133, 134, 135, 136, 61, 62, 63, 71, 72, 73, 74, 161, 162, 163, 81, 82, 83, 91, 92, 141, 142, 101, 102, 103, 111, 112, 113, 114, 121, 122, 123, 124]
 lab_educ = {0:"Sin educación formal o básica incompleta",1:"Básica completa o media incompleta",
             2:"Media completa",3:"Técnica de nivel superior",4:"Profesional (universitaria)",
             5:"Magíster",6:"Doctorado",9:"Nivel no declarado"}
@@ -123,6 +180,7 @@ def _fmt(t, labels, orden):
 t_sexo   = con_tasa("sexo", lab_sexo, [1,2])
 t_edad   = con_tasa("tramo_edad", lab_edad, list(range(1,13)))
 t_region = con_tasa("region", lab_region, orden_region)
+t_provincia = con_tasa("provincia", lab_provincia, orden_provincia)
 t_educ   = con_tasa("cine11_1d", lab_educ, [0,1,2,3,4,5,6,9])
 t_nac    = con_tasa("nacional", None, ["Chilena","Extranjera"])
 t_indig  = con_tasa("indigena", None, ["Sí","No","No declarado"])
@@ -379,6 +437,8 @@ ws.column_dimensions["A"].width = 46; ws.column_dimensions["B"].width = 18
 hoja("Sexo", "Personas desocupadas según sexo - MJJ 2026", t_sexo, True)
 hoja("Edad", "Personas desocupadas según tramo de edad - MJJ 2026", t_edad, True)
 hoja("Region", "Personas desocupadas según región - MJJ 2026", t_region, True)
+hoja("Provincia", "Personas desocupadas según provincia - MJJ 2026", t_provincia, True,
+     nota='Nota: la ENE tiene representatividad regional, no provincial. Estas cifras son elaboración propia y no constituyen estimaciones oficiales del INE: en varias provincias el número de casos muestrales de personas desocupadas es muy bajo y la tasa resultante tiene un error muestral alto. Las provincias de Isla de Pascua y Palena no aparecen porque no forman parte de la muestra del trimestre. El nombre de cada provincia va acompañado de su región.')
 hoja("Educacion", "Personas desocupadas según nivel educacional alcanzado - MJJ 2026", t_educ, True,
      "Clasificación CINE 2011 (variable cine11_1d de la ENE).")
 hoja("Nacionalidad", "Personas desocupadas según nacionalidad - MJJ 2026", t_nac, True)
