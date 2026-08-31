@@ -104,6 +104,27 @@ def serie_duracion(desde=2020):
         filas.append(fila)
     return filas
 
+def serie_profesional(desde=2020):
+    """Peso de las personas con educacion profesional universitaria (cine11_1d == 4)
+    dentro del total de desocupados, y tasa de desocupacion de ese mismo grupo."""
+    fs = [f for f in glob.glob(f"{BASE}/ano=*/mes_central=*/part-0.parquet")
+          if int(re.search(r"ano=(\d+)", f).group(1)) >= desde]
+    fs.sort(key=lambda f: [int(x) for x in
+                           re.search(r"ano=(\d+)/mes_central=(\d+)", f).groups()])
+    filas = []
+    for f in fs:
+        ano, mes = [int(x) for x in re.search(r"ano=(\d+)/mes_central=(\d+)", f).groups()]
+        t = pq.read_table(f, columns=["activ", "cine11_1d", "fact_cal"]).to_pandas()
+        ft = t[t.activ.isin([1, 2])]
+        d  = ft[ft.activ == 2]
+        prof_ft = ft[ft.cine11_1d == 4]
+        prof_d  = d[d.cine11_1d == 4]
+        filas.append(dict(a=ano, m=mes,
+                          sh=round(prof_d.fact_cal.sum() / d.fact_cal.sum() * 100, 2),
+                          ta=round(prof_d.fact_cal.sum() / prof_ft.fact_cal.sum() * 100, 2),
+                          n=int(len(prof_d))))
+    return filas
+
 # ---------------------------------------------------------------- lectura del Excel
 def leer_excel():
     wb = openpyxl.load_workbook(XL)
@@ -149,6 +170,7 @@ D["serie"] = [dict(a=int(r.ano), m=int(r.mes_central),
                    td=round(r.td, 2), d=int(round(r.desocupados)))
               for r in s.itertuples()]
 D["serie_dur"] = [dict(lab=f"{MES[x['m']]} {x['a']}", **x) for x in serie_duracion()]
+D["serie_prof"] = [dict(lab=f"{MES[x['m']]} {x['a']}", **x) for x in serie_profesional()]
 DATA_JS = json.dumps(D, ensure_ascii=False)
 
 HTML = """<meta charset="utf-8">
@@ -315,6 +337,12 @@ section[hidden]{display:none}
         Palena no aparecen porque no forman parte de la muestra del trimestre.</p>
     </div>
     <div class="card"><h3>Nivel educacional</h3><div id="t_educ"></div></div>
+    <div class="card span"><h3>Profesionales universitarios, trimestre a trimestre</h3>
+      <p class="hint">Dos indicadores desde 2020: cuánto pesan las personas con educación profesional universitaria
+        dentro del total de desocupados (%) y la tasa de desocupación de ese mismo grupo (%).</p>
+      <div class="cw" style="height:300px"><canvas id="c_prof"></canvas></div>
+      <p class="caption" id="profCaption"></p>
+    </div>
     <div class="card"><h3>Condición: cesantes y quienes buscan por primera vez</h3><div id="t_cond"></div></div>
     <div class="card"><h3>Nacionalidad</h3><div id="t_nac"></div></div>
     <div class="card"><h3>Jefatura de hogar y pueblos indígenas</h3><div id="t_jef"></div><div style="height:10px"></div><div id="t_pi"></div></div>
@@ -514,6 +542,36 @@ tabla('t_cond','Condicion',{color:A2});
 tabla('t_nac','Nacionalidad',{color:A3});
 tabla('t_jef','Jefatura_hogar',{color:A5});
 tabla('t_pi','Pueblo_indigena',{color:A5});
+
+/* ---- sección 1: serie de profesionales universitarios ---- */
+{
+  const S = D.serie_prof;
+  new Chart(document.getElementById('c_prof'),{type:'line',
+    data:{labels:S.map(x=>x.lab),datasets:[
+      {label:'Profesionales universitarios como % del total de personas desocupadas',
+       data:S.map(x=>x.sh),borderColor:A2,backgroundColor:A2,borderWidth:2.4,pointRadius:0,
+       pointHoverRadius:4,tension:.25},
+      {label:'Tasa de desocupación de los profesionales universitarios',
+       data:S.map(x=>x.ta),borderColor:A4,backgroundColor:A4,borderWidth:2.4,pointRadius:0,
+       pointHoverRadius:4,tension:.25}
+    ]},
+    options:{...baseOpts,interaction:{mode:'index',intersect:false},
+     scales:{x:{grid:{display:false},border:{color:LINE},ticks:{maxTicksLimit:14,maxRotation:0}},
+             y:{beginAtZero:true,grid:{color:LINE},border:{display:false},ticks:{callback:v=>v+'%'}}},
+     plugins:{...baseOpts.plugins,
+       legend:{display:true,position:'top',align:'start',
+               labels:{boxWidth:10,boxHeight:10,usePointStyle:true,pointStyle:'circle',padding:14}},
+       tooltip:{...baseOpts.plugins.tooltip,callbacks:{
+         label:c=>(c.datasetIndex? 'Tasa del grupo: ':'% de los desocupados: ')+P(c.raw)+'%'}}}}});
+  const u = S[S.length-1], p0 = S[0], pico = S.reduce((m,x)=>x.sh>m.sh?x:m,S[0]);
+  document.getElementById('profCaption').innerHTML =
+    `En ${u.lab} las personas con educación profesional universitaria son el ${P(u.sh)}% de todas las personas ` +
+    `desocupadas, frente al ${P(p0.sh)}% de ${p0.lab}; el máximo de la serie es ${P(pico.sh)}% en ${pico.lab}. ` +
+    `Ese peso creciente se explica en parte por la expansión del grupo dentro de la fuerza de trabajo, por eso ` +
+    `se acompaña de la tasa de desocupación del propio grupo, que en ${u.lab} llega a ${P(u.ta)}% frente al ` +
+    `${P(p0.ta)}% de ${p0.lab}. Nivel educacional según CINE 2011 (<code>cine11_1d</code> = 4), que excluye ` +
+    `magíster y doctorado. Cálculo directo sobre los microdatos, expandido con <code>fact_cal</code>.`;
+}
 
 /* ---- sección 2: serie de larga duración ---- */
 {
