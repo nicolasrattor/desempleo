@@ -11,6 +11,7 @@ lo unico externo es Chart.js desde CDN).
 Uso, desde la raiz del repositorio:  python3 ene_empleo_microdatos/build_dashboard.py
 """
 import glob, json, re
+import numpy as np
 import openpyxl
 import pandas as pd
 import pyarrow.parquet as pq
@@ -43,6 +44,65 @@ def serie_historica():
         filas.append(dict(ano=ano, mes_central=mes, desocupados=d, ft=o + d,
                           td=d / (o + d) * 100))
     return pd.DataFrame(filas).sort_values(["ano", "mes_central"])
+
+# ------------------------------------------------- serie de larga duracion 2020-2026
+def _peso_12m(df, pref):
+    """Probabilidad de que el episodio lleve 12 meses o mas, fila a fila.
+
+    La persona declara mes y ano de inicio (de la busqueda, e6; o del termino del
+    ultimo empleo, e21). El mes falta en una fraccion no despreciable de los casos
+    -y esa fraccion cambia mucho entre trimestres-, asi que en vez de descartarlos
+    se resuelve por la brecha de anos, que casi siempre basta:
+
+      * mismo ano de la encuesta            -> menos de 12 meses (peso 0)
+      * dos anos o mas de diferencia        -> 12 meses o mas     (peso 1)
+      * exactamente un ano de diferencia    -> depende del mes: si se declaro, se
+        compara contra el mes de la encuesta; si no, se reparte suponiendo el mes
+        uniforme dentro del ano (peso = mes_encuesta/12).
+
+    Solo el ultimo caso es imputado y pesa ~1% de la muestra, salvo entre diciembre
+    de 2023 y diciembre de 2024, cuando una ola de no respuesta del mes lo lleva
+    hasta el 50% de las personas cesantes. Esa ventana se marca en el grafico.
+    """
+    a = df[f"{pref}_ano"].where((df[f"{pref}_ano"] >= 1900) &
+                                (df[f"{pref}_ano"] <= df.ano_encuesta))
+    m = df[f"{pref}_mes"].where(df[f"{pref}_mes"].between(1, 12))
+    gap = df.ano_encuesta - a
+    w = pd.Series(np.nan, index=df.index)
+    w[gap == 0]  = 0.0
+    w[gap >= 2]  = 1.0
+    con = (gap == 1) & m.notna();  w[con] = (m <= df.mes_encuesta)[con].astype(float)
+    sin = (gap == 1) & m.isna();   w[sin] = (df.mes_encuesta / 12)[sin]
+    return w, sin
+
+def serie_duracion(desde=2020):
+    """% de desocupados que llevan 12 meses o mas buscando y % de cesantes que
+    llevan 12 meses o mas sin empleo, trimestre a trimestre."""
+    fs = [f for f in glob.glob(f"{BASE}/ano=*/mes_central=*/part-0.parquet")
+          if int(re.search(r"ano=(\d+)", f).group(1)) >= desde]
+    fs.sort(key=lambda f: [int(x) for x in
+                           re.search(r"ano=(\d+)/mes_central=(\d+)", f).groups()])
+    filas = []
+    for f in fs:
+        ano, mes = [int(x) for x in re.search(r"ano=(\d+)/mes_central=(\d+)", f).groups()]
+        cols = ["activ", "cae_general", "fact_cal", "mes_encuesta", "ano_encuesta",
+                "e6_mes", "e6_ano"]
+        # e21 (termino del ultimo empleo) recien aparece con el cuestionario de julio de 2020
+        hay21 = "e21_mes" in pq.read_schema(f).names
+        if hay21:
+            cols += ["e21_mes", "e21_ano"]
+        t = pq.read_table(f, columns=cols).to_pandas()
+        d = t[t.activ == 2].copy()
+        fila = dict(a=ano, m=mes)
+        pares = [("bus", d, "e6")] + ([("ces", d[d.cae_general == 4].copy(), "e21")] if hay21 else [])
+        for k, base, pref in pares:
+            w, sin = _peso_12m(base, pref)
+            ok = w.notna()
+            fila[k] = round((base.fact_cal[ok] * w[ok]).sum() / base.fact_cal[ok].sum() * 100, 2)
+            fila[k + "imp"] = round(base.fact_cal[sin].sum() / base.fact_cal.sum() * 100, 1)
+            fila[k + "n"] = int(round(w[ok].sum()))
+        filas.append(fila)
+    return filas
 
 # ---------------------------------------------------------------- lectura del Excel
 def leer_excel():
@@ -88,6 +148,7 @@ D["serie"] = [dict(a=int(r.ano), m=int(r.mes_central),
                    lab=f"{MES[int(r.mes_central)]} {int(r.ano)}",
                    td=round(r.td, 2), d=int(round(r.desocupados)))
               for r in s.itertuples()]
+D["serie_dur"] = [dict(lab=f"{MES[x['m']]} {x['a']}", **x) for x in serie_duracion()]
 DATA_JS = json.dumps(D, ensure_ascii=False)
 
 HTML = """<meta charset="utf-8">
@@ -179,39 +240,27 @@ footer .gh:hover{border-color:var(--ink);color:var(--ink)}
 footer .gh svg{fill:var(--ink)}
 .gh b{font-weight:600}
 
-/* ---------- indice lateral ---------- */
-#toc{position:fixed;top:0;left:0;height:100vh;width:252px;overflow-y:auto;z-index:60;
-     background:#fff;border-right:1px solid var(--line);padding:64px 14px 40px;
-     transform:translateX(-100%);transition:transform .22s ease}
-#toc.open{transform:none}
-#toc .tt{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);
-         padding:0 10px;margin:0 0 8px;font-weight:700}
-#toc a{display:block;text-decoration:none;color:var(--ink2);font-size:12.5px;line-height:1.35;
-       padding:6px 10px;border-radius:0 6px 6px 0;border-left:2px solid transparent}
-#toc a.lvl1{font-weight:650;color:var(--ink);margin-top:13px;font-size:13px}
-#toc a.lvl2{padding-left:20px;color:var(--muted);font-size:12px}
-#toc a:hover{background:#f2f4f7;color:var(--ink)}
-#toc a.act{border-left-color:var(--a2);background:#fdf2ee;color:var(--ink)}
-#tocbtn{position:fixed;top:14px;left:16px;z-index:70;background:rgba(255,255,255,.95);
-        border:1px solid var(--line);border-radius:8px;width:38px;height:38px;cursor:pointer;
-        box-shadow:0 4px 14px -6px rgba(0,0,0,.45);display:flex;align-items:center;
-        justify-content:center;gap:3.5px;flex-direction:column;padding:0;transition:left .22s ease}
-#tocbtn i{display:block;width:16px;height:1.7px;background:var(--ink);border-radius:2px;
-          transition:transform .2s,opacity .2s}
-#tocbtn.shift{left:200px}
-#tocbtn.shift i:nth-child(1){transform:translateY(5.2px) rotate(45deg)}
-#tocbtn.shift i:nth-child(2){opacity:0}
-#tocbtn.shift i:nth-child(3){transform:translateY(-5.2px) rotate(-45deg)}
-body{transition:padding-left .22s ease}
-body.tocopen{padding-left:252px}
-section{scroll-margin-top:20px}
-.card{scroll-margin-top:20px}
-@media(max-width:1180px){body.tocopen{padding-left:0}#toc{box-shadow:0 0 44px rgba(0,0,0,.20)}}
-@media(max-width:640px){.herochart{transform:none;margin-top:24px}.spacer{height:0}}
-</style>
+/* ---------- panel de dos graficos dentro de una tarjeta ---------- */
+.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:20px}
+.duo .mini{margin:0 0 10px;font-size:11.5px;color:var(--muted)}
 
-<button id="tocbtn" title="Índice del documento"><i></i><i></i><i></i></button>
-<nav id="toc"><p class="tt">Índice</p><div id="toclist"></div></nav>
+/* ---------- pestanas de nivel 1 ---------- */
+#nav{position:sticky;top:0;z-index:50;background:rgba(246,247,249,.94);
+     backdrop-filter:saturate(160%) blur(8px);border-bottom:1px solid var(--line);
+     margin-bottom:8px}
+#nav .wrap{padding:0 24px;display:flex;gap:2px;overflow-x:auto;scrollbar-width:none}
+#nav .wrap::-webkit-scrollbar{display:none}
+#nav button{appearance:none;background:none;border:0;cursor:pointer;white-space:nowrap;
+     font-family:inherit;font-size:13.5px;color:var(--muted);padding:15px 14px 13px;
+     border-bottom:2.5px solid transparent;display:flex;align-items:baseline;gap:7px}
+#nav button:hover{color:var(--ink)}
+#nav button.on{color:var(--ink);font-weight:650;border-bottom-color:var(--a2)}
+#nav button i{font-style:normal;font-size:10.5px;letter-spacing:.1em;color:var(--a2);font-weight:700}
+section{margin:34px 0 0}
+section[hidden]{display:none}
+@media(max-width:640px){.herochart{transform:none;margin-top:24px}.spacer{height:0}
+  #nav button{font-size:12.5px;padding:13px 10px 11px}}
+</style>
 
 <!-- El logo de GitHub va inline como SVG para que el archivo siga siendo autocontenido. -->
 <template id="ghlink">
@@ -240,6 +289,8 @@ section{scroll-margin-top:20px}
 </div>
 <div class="spacer"></div>
 
+<nav id="nav"><div class="wrap" id="navtabs"></div></nav>
+
 <div class="wrap">
 
 <section>
@@ -249,7 +300,8 @@ section{scroll-margin-top:20px}
     <b>9 buscan trabajo por primera vez</b>. El desempleo chileno es, sobre todo, un problema de reinserción.</div>
   <div class="grid g2">
     <div class="card"><h3>Sexo</h3><p class="hint">Tasa de desocupación, %</p><div class="cw" style="height:170px"><canvas id="c_sexo"></canvas></div></div>
-    <div class="card"><h3>Tramo de edad</h3><p class="hint">Tasa de desocupación, %</p><div class="cw" style="height:230px"><canvas id="c_edad"></canvas></div></div>
+    <div class="card"><h3>Tramo de edad · tasa</h3><p class="hint">Tasa de desocupación de cada tramo, %</p><div class="cw" style="height:230px"><canvas id="c_edad"></canvas></div></div>
+    <div class="card"><h3>Tramo de edad · distribución</h3><p class="hint">Cómo se reparten las 981 mil personas desocupadas, %</p><div class="cw" style="height:230px"><canvas id="c_edad_d"></canvas></div></div>
     <div class="card span"><h3>Región</h3><p class="hint">Tasa de desocupación, % — ordenada de mayor a menor</p><div class="cw" style="height:300px"><canvas id="c_region"></canvas></div></div>
     <div class="card span"><h3>Provincia</h3>
       <p class="hint">Tasa de desocupación, % — la ENE tiene representatividad regional, no provincial: leer con cautela</p>
@@ -273,6 +325,12 @@ section{scroll-margin-top:20px}
   <div class="shead"><div class="num">02</div><h2>Cuánto llevan buscando</h2>
   <p>La duración del episodio separa la rotación normal del mercado laboral del desempleo que se enquista.</p></div>
   <div class="grid g2">
+    <div class="card span"><h3>El desempleo de larga duración, trimestre a trimestre</h3>
+      <p class="hint">Dos indicadores desde 2020: personas desocupadas que llevan 12 meses o más buscando trabajo
+        (% del total de desocupados) y personas cesantes que llevan 12 meses o más sin empleo (% del total de cesantes).</p>
+      <div class="cw" style="height:300px"><canvas id="c_larga"></canvas></div>
+      <p class="caption" id="largaCaption"></p>
+    </div>
     <div class="card"><h3>Duración de la búsqueda de empleo</h3><p class="hint">% del total de personas desocupadas</p><div class="cw" style="height:230px"><canvas id="c_dbus"></canvas></div></div>
     <div class="card"><h3>Duración de la cesantía</h3><p class="hint">Tiempo sin empleo, solo personas cesantes</p><div class="cw" style="height:230px"><canvas id="c_dces"></canvas></div></div>
     <div class="card"><h3>Métodos de búsqueda utilizados</h3><p class="hint">Respuesta múltiple: los porcentajes no suman 100</p><div id="t_met"></div></div>
@@ -280,7 +338,7 @@ section{scroll-margin-top:20px}
   </div>
 </section>
 
-<section>
+<section data-tab="Por qué terminó el empleo">
   <div class="shead"><div class="num">03</div><h2>Por qué terminó el último empleo</h2>
   <p>Entre las personas cesantes, seis de cada diez salieron por el fin de un contrato, una faena o una temporada: el desempleo llega, la mayoría de las veces, por la vía del empleo temporal.</p></div>
   <div class="grid g2">
@@ -290,7 +348,7 @@ section{scroll-margin-top:20px}
   </div>
 </section>
 
-<section>
+<section data-tab="De dónde vienen">
   <div class="shead"><div class="num">04</div><h2>De dónde vienen: el panel MJJ 2025 → MJJ 2026</h2>
   <p>La ENE reentrevista a cada persona doce meses después. Enlazando ambas olas se recupera algo que el corte transversal no puede
      mostrar: la situación laboral de las personas hoy desocupadas exactamente un año antes.</p></div>
@@ -307,7 +365,7 @@ section{scroll-margin-top:20px}
   </div>
 </section>
 
-<div class="notes" id="notas"></div>
+<section data-tab="Nota metodológica"><div class="notes" id="notas" style="margin-top:0"></div></section>
 <footer><div id="gh_foot"></div>Elaboración propia a partir de microdatos de la Encuesta Nacional de Empleo, Instituto Nacional de Estadísticas de Chile.<br>
 Cifras expandidas con el factor trimestral <code>fact_cal</code> (proyecciones de población base Censo 2017).</footer>
 </div>
@@ -424,6 +482,7 @@ const sx = D.Sexo.rows;
 barH('c_sexo', sx.map(r=>r.cat), sx.map(r=>r.tasa), [A1,A2]);
 const ed = D.Edad.rows;
 barH('c_edad', ed.map(r=>r.cat), ed.map(r=>r.tasa), A1);
+barH('c_edad_d', ed.map(r=>r.cat), ed.map(r=>r.pct), A2);
 const rg = D.Region.rows.slice().sort((a,b)=>b.tasa-a.tasa);
 barH('c_region', rg.map(r=>r.cat.replace(/^Región de(l)? /,'')), rg.map(r=>r.tasa), A1);
 /* Provincias: tabla propia en dos columnas, ordenada por tasa. Las provincias con pocos casos
@@ -456,6 +515,36 @@ tabla('t_nac','Nacionalidad',{color:A3});
 tabla('t_jef','Jefatura_hogar',{color:A5});
 tabla('t_pi','Pueblo_indigena',{color:A5});
 
+/* ---- sección 2: serie de larga duración ---- */
+{
+  const L = D.serie_dur;
+  new Chart(document.getElementById('c_larga'),{type:'line',
+    data:{labels:L.map(x=>x.lab),datasets:[
+      {label:'Buscan hace 12 meses o más (% de las personas desocupadas)',
+       data:L.map(x=>x.bus),borderColor:A3,backgroundColor:A3,borderWidth:2.4,pointRadius:0,
+       pointHoverRadius:4,tension:.25},
+      {label:'Cesantes hace 12 meses o más (% de las personas cesantes)',
+       data:L.map(x=>x.ces==null?null:x.ces),borderColor:A2,backgroundColor:A2,borderWidth:2.4,
+       pointRadius:0,pointHoverRadius:4,tension:.25,spanGaps:false}
+    ]},
+    options:{...baseOpts,interaction:{mode:'index',intersect:false},
+     scales:{x:{grid:{display:false},border:{color:LINE},ticks:{maxTicksLimit:14,maxRotation:0}},
+             y:{beginAtZero:true,grid:{color:LINE},border:{display:false},ticks:{callback:v=>v+'%'}}},
+     plugins:{...baseOpts.plugins,
+       legend:{display:true,position:'top',align:'start',
+               labels:{boxWidth:10,boxHeight:10,usePointStyle:true,pointStyle:'circle',padding:14}},
+       tooltip:{...baseOpts.plugins.tooltip,callbacks:{
+         label:c=>(c.datasetIndex? 'Cesantes 12m+: ':'Buscando 12m+: ')+P(c.raw)+'%'}}}}});
+  const u = L[L.length-1], pico = L.reduce((m,x)=>x.bus>m.bus?x:m,L[0]);
+  document.getElementById('largaCaption').innerHTML =
+    `En ${u.lab} el ${P(u.bus)}% de las personas desocupadas llevaba doce meses o más buscando trabajo, y el ` +
+    `${P(u.ces)}% de las personas cesantes llevaba doce meses o más sin empleo. El máximo de la serie es ` +
+    `${P(pico.bus)}% en ${pico.lab}, la resaca de la pandemia. La línea de cesantía parte en JJA 2020 porque ` +
+    `la pregunta sobre el término del último empleo se incorpora al cuestionario en julio de ese año. ` +
+    `Los porcentajes son algo más altos que los de la tabla de tramos que sigue: aquí se recuperan, por la vía ` +
+    `del año declarado, los casos que no recuerdan el mes exacto, que son sobre todo episodios largos.`;
+}
+
 /* ---- sección 2 ---- */
 const db = D.Duracion_busqueda.rows;
 barH('c_dbus', db.map(r=>r.cat), db.map(r=>r.pct), A3);
@@ -486,50 +575,38 @@ tabla('t_psec','Panel_sector_inst_2025',{color:A3});
   document.getElementById('gh_foot').innerHTML = tpl;
 }
 
-/* ---- índice lateral: se arma solo, recorriendo los títulos del documento ---- */
+/* ---- pestañas: cada título de nivel 1 es una pestaña ---------------------------
+   Se activa al final, cuando todos los gráficos ya se dibujaron con las secciones
+   visibles: si Chart.js crea un canvas dentro de un contenedor oculto lo mide en
+   cero y no siempre se recupera al mostrarlo. */
 (function(){
-  const items = [];
-  const slug = (t,i) => 'h'+i+'-'+t.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,'')
-                          .replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40);
-  items.push({id:'top', txt:'Portada y serie histórica', lvl:1});
-  document.querySelector('.hero').id = 'top';
-  document.querySelectorAll('section').forEach((sec,i)=>{
-    const h2 = sec.querySelector('.shead h2'); if(!h2) return;
-    sec.id = slug(h2.textContent, i);
-    items.push({id:sec.id, txt:h2.textContent, lvl:1});
-    sec.querySelectorAll('.card h3').forEach((h3,j)=>{
-      const c = h3.closest('.card');
-      c.id = sec.id+'-'+j;
-      items.push({id:c.id, txt:h3.textContent, lvl:2});
+  const secs = [...document.querySelectorAll('.wrap > section')];
+  const nombre = s => s.dataset.tab || s.querySelector('.shead h2').textContent;
+  const num    = s => s.querySelector('.shead .num') ? s.querySelector('.shead .num').textContent : '';
+  document.getElementById('navtabs').innerHTML = secs.map((s,i)=>
+    `<button data-i="${i}">${num(s)?`<i>${num(s)}</i>`:''}${nombre(s)}</button>`).join('');
+  const btns = [...document.querySelectorAll('#navtabs button')];
+  // El número ya va en la pestaña; repetirlo dentro de la sección es ruido.
+  secs.forEach(s=>{ const n=s.querySelector('.shead .num'); if(n) n.remove(); });
+
+  function ir(i, saltar){
+    secs.forEach((s,j)=>s.hidden = j!==i);
+    btns.forEach((b,j)=>b.classList.toggle('on', j===i));
+    try{ localStorage.setItem('tab', i); }catch(e){}
+    if(saltar){
+      const nav = document.getElementById('nav');
+      const y = nav.getBoundingClientRect().top + window.scrollY;
+      if(window.scrollY > y) window.scrollTo({top:y, behavior:'instant'});
+    }
+    // Chart.js mide el canvas al crearlo: hay que pedirle que recalcule al mostrarlo.
+    secs[i].querySelectorAll('canvas').forEach(cv=>{
+      const ch = Chart.getChart(cv); if(ch) ch.resize();
     });
-  });
-  items.push({id:'notas', txt:'Nota metodológica', lvl:1});
-
-  document.getElementById('toclist').innerHTML = items.map(it=>
-    `<a href="#${it.id}" class="lvl${it.lvl}" data-id="${it.id}">${it.txt}</a>`).join('');
-
-  const nav = document.getElementById('toc'), btn = document.getElementById('tocbtn');
-  const abrir = v => { nav.classList.toggle('open', v); btn.classList.toggle('shift', v);
-                       document.body.classList.toggle('tocopen', v);
-                       try{ localStorage.setItem('toc', v?'1':'0'); }catch(e){} };
-  btn.onclick = () => abrir(!nav.classList.contains('open'));
-  let abierto = window.innerWidth >= 1180;
-  try{ const g = localStorage.getItem('toc'); if(g!==null) abierto = g==='1'; }catch(e){}
-  abrir(abierto);
-  // En pantallas angostas el índice tapa el contenido: al elegir un título se cierra.
-  nav.addEventListener('click', e => {
-    if(e.target.tagName==='A' && window.innerWidth < 1180) abrir(false);
-  });
-
-  const links = {};
-  nav.querySelectorAll('a').forEach(a => links[a.dataset.id] = a);
-  const marcar = id => { for(const k in links) links[k].classList.toggle('act', k===id); };
-  const obs = new IntersectionObserver(es=>{
-    const vis = es.filter(e=>e.isIntersecting)
-                  .sort((a,b)=>a.boundingClientRect.top-b.boundingClientRect.top);
-    if(vis.length) marcar(vis[0].target.id);
-  },{rootMargin:'-15% 0px -70% 0px', threshold:0});
-  items.forEach(it=>{ const el = document.getElementById(it.id); if(el) obs.observe(el); });
+  }
+  btns.forEach((b,i)=> b.onclick = ()=> ir(i, true));
+  let ini = 0;
+  try{ const g = +localStorage.getItem('tab'); if(g>=0 && g<secs.length) ini = g; }catch(e){}
+  ir(ini, false);
 })();
 
 /* ---- notas ---- */
@@ -537,6 +614,7 @@ document.getElementById('notas').innerHTML = `<h3>Nota metodológica</h3>
 <p><b>Fuente.</b> Microdatos de la Encuesta Nacional de Empleo (ENE), Instituto Nacional de Estadísticas de Chile. El corte principal es el trimestre móvil mayo–junio–julio de 2026 (97.946 personas encuestadas). La serie histórica cubre todos los trimestres móviles disponibles desde 2010 hasta MJJ 2026 (${S.length} trimestres).</p>
 <p><b>Definiciones.</b> Se considera desocupada a la persona sin empleo que buscó trabajo en las últimas cuatro semanas y está disponible para trabajar (marco conceptual de la OIT, 19ª CIET). Dentro de ese grupo se distingue a las personas cesantes, con experiencia laboral previa, de quienes buscan trabajo por primera vez. La tasa de desocupación es el cociente entre personas desocupadas y fuerza de trabajo. Todas las cifras de personas están expandidas con el factor trimestral <code>fact_cal</code>.</p>
 <p><b>Panel.</b> La ENE es un panel rotativo: cada persona se entrevista tres meses seguidos, sale de la muestra y vuelve doce meses después. El enlace entre MJJ 2025 y MJJ 2026 se hace por identificador de persona contra el mismo mes calendario, validando igual sexo y una diferencia de edad de cero a dos años. Quedan 25.486 pares válidos, de los cuales 1.086 corresponden a personas desocupadas en 2026 (24,6% del total). <b>La submuestra panel no tiene diseño muestral ni factores de expansión propios</b>: las cifras expandidas son solo indicativas, la distribución porcentual es la lectura recomendada y no corresponde presentarlas como estimaciones oficiales del INE.</p>
+<p><b>Larga duración.</b> La serie trimestral de episodios de doce meses o más se construye desde los microdatos de cada trimestre móvil, no desde el corte de MJJ 2026. La duración se calcula contra el mes y año que declara la persona: el inicio de la búsqueda (e6) para las personas desocupadas y el término del último empleo (e21, disponible desde el cuestionario de julio de 2020) para las cesantes. Una fracción variable de las respuestas entrega el año pero no el mes, así que la clasificación se resuelve por la brecha de años —mismo año, menos de doce meses; dos años o más, doce meses o más— y solo queda por imputar el caso de exactamente un año de diferencia sin mes declarado, al que se le asigna la proporción que corresponde suponiendo el mes uniforme dentro del año. Ese grupo pesa alrededor del 1% de la muestra, salvo entre diciembre de 2023 y diciembre de 2024, cuando una ola de no respuesta del mes en la pregunta e21 lo lleva hasta la mitad de las personas cesantes: el nivel de esa línea en ese tramo debe leerse con cautela. Como el procedimiento recupera casos que la tabla de tramos deja en "no declarado", y esos casos son sobre todo episodios largos, los porcentajes de la serie son algo más altos que los del tabulado transversal.</p>
 <p><b>Precisión.</b> Las columnas de casos muestrales se muestran junto a cada porcentaje porque en las desagregaciones más finas el número de observaciones es pequeño: conviene ser cauto con cualquier categoría bajo 50 casos. Los métodos de búsqueda son de respuesta múltiple, por lo que sus porcentajes no suman cien.</p>`;
 </script>
 """
