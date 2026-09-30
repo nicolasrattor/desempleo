@@ -21,10 +21,23 @@ import os
 # Los microdatos de la ENE no viajan en el repositorio (pesan ~1,2 GB). Se esperan en ./data
 # con la particion original ano=/mes_central=, o en la ruta que indique la variable ENE_DATA.
 BASE = os.environ.get("ENE_DATA", "data")
-XL   = "desocupados_mjj2026.xlsx"
+# Se toma el Excel de tabulados mas reciente que haya en la carpeta, para no tener que
+# editar el script cada trimestre. Se puede forzar uno con la variable ENE_XLSX.
+_ORD = {"def":1,"efm":2,"fma":3,"mam":4,"amj":5,"mjj":6,
+        "jja":7,"jas":8,"aso":9,"son":10,"ond":11,"nde":12}
+def _ultimo_xlsx():
+    fs = glob.glob("desocupados_*.xlsx")
+    if not fs:
+        raise SystemExit("No hay ningun desocupados_*.xlsx en la carpeta.")
+    def k(f):
+        m = re.search(r"desocupados_([a-z]{3})(\d{4})\.xlsx$", f)
+        return (int(m.group(2)), _ORD[m.group(1)]) if m else (0, 0)
+    return max(fs, key=k)
+XL   = os.environ.get("ENE_XLSX") or _ultimo_xlsx()
 OUT  = "dashboard_desempleo.html"
 REPO = "https://github.com/nicolasrattor/desempleo"
-TOTAL_DESOCUPADOS = 981044   # base fija para la hoja de respuesta multiple
+# Fecha en que el INE publico el trimestre de referencia: se actualiza a mano cada vez.
+FECHA_PUB = os.environ.get("ENE_FECHA_PUB", "30 de septiembre de 2026")
 
 # ---------------------------------------------------------------- serie 2010-2026
 def serie_historica():
@@ -129,8 +142,18 @@ def serie_profesional(desde=2020):
 def leer_excel():
     wb = openpyxl.load_workbook(XL)
     out = {}
+    total_desoc = None   # base de la hoja de respuesta multiple, viene del Resumen
     for n in wb.sheetnames:
         if n == "Notas":
+            # De la hoja de notas solo se rescatan las cifras del enlace panel, que no
+            # estan tabuladas en ninguna otra parte.
+            txt = "\n".join(str(r[0]) for r in wb[n].iter_rows(values_only=True) if r[0])
+            mp = re.search(r"Pares enlazados y validados: ([\d.]+)", txt)
+            mc = re.search(r"Cobertura: ([\d.]+) de las ([\d.]+) personas desocupadas[^(]*\(([\d,.]+)%\)", txt)
+            out["_panel"] = dict(pares=mp.group(1) if mp else "—",
+                                 casos=mc.group(1) if mc else "—",
+                                 total=mc.group(2) if mc else "—",
+                                 pct=(mc.group(3).replace(".", ",") if mc else "—"))
             continue
         ws = wb[n]
         if n == "Resumen":
@@ -139,6 +162,7 @@ def leer_excel():
                 if r[0] and not isinstance(r[1], str):
                     d[r[0].strip()] = r[1]
             out["Resumen"] = d
+            total_desoc = d.get("Personas desocupadas")
             continue
         hdr = [c for c in next(ws.iter_rows(min_row=3, max_row=3, values_only=True)) if c]
         rows, nota = [], None
@@ -153,7 +177,7 @@ def leer_excel():
                              ft=r[4] if len(r) > 4 and isinstance(r[4], (int, float)) else None))
         # Los porcentajes y tasas viven como formulas en el Excel; aqui se recalculan
         # desde los valores para no depender de un motor de calculo.
-        tot = TOTAL_DESOCUPADOS if n == "Metodos_busqueda" else sum(x["n"] for x in rows)
+        tot = total_desoc if n == "Metodos_busqueda" else sum(x["n"] for x in rows)
         for x in rows:
             x["pct"]  = round(x["n"] / tot * 100, 1) if tot else None
             x["tasa"] = round(x["n"] / x["ft"] * 100, 1) if x["ft"] else None
@@ -171,11 +195,60 @@ D["serie"] = [dict(a=int(r.ano), m=int(r.mes_central),
               for r in s.itertuples()]
 D["serie_dur"] = [dict(lab=f"{MES[x['m']]} {x['a']}", **x) for x in serie_duracion()]
 D["serie_prof"] = [dict(lab=f"{MES[x['m']]} {x['a']}", **x) for x in serie_profesional()]
+
+# ------------------------------------------------- textos que dependen del trimestre
+_MESL = {1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",
+         7:"julio",8:"agosto",9:"septiembre",10:"octubre",11:"noviembre",12:"diciembre"}
+_u  = D["serie"][-1]
+_R  = D["Resumen"]
+_td = _R["Personas desocupadas"] / _R["Fuerza de trabajo"] * 100
+def _es(n, dec=1):
+    return f"{n:,.{dec}f}".replace(",", "@").replace(".", ",").replace("@", ".")
+TXT = {
+    "TRIM":      _u["lab"],                                   # JJA 2026
+    "TRIM_PREV": f"{MES[_u['m']]} {_u['a']-1}",               # JJA 2025
+    "TRIM_LARGO": "–".join(_MESL[(_u["m"] - 2 + k) % 12 + 1] for k in range(3)) + f" de {_u['a']}",
+    "TD":        _es(_td) + "%",                              # 9,6%
+    "DESOC_MIL": f"{round(_R['Personas desocupadas']/1000):,}".replace(",", ".") + " mil",
+    "PCT_CES":   _es(_R["Cesantes"] / _R["Personas desocupadas"] * 100) + "%",
+    "CASOS_ENC": _es(_R["Casos muestrales (total encuesta)"], 0),
+    "CASOS_DES": _es(_R["Casos muestrales (personas desocupadas)"], 0),
+    "PANEL_PARES": D["_panel"]["pares"],
+    "PANEL_CASOS": D["_panel"]["casos"],
+    "PANEL_PCT":   D["_panel"]["pct"] + "%",
+    "FECHA_PUB":   FECHA_PUB,
+    "ANO":         str(_u["a"]),
+}
+
+# Cifras que aparecen citadas en los textos de entrada de cada seccion. Se calculan aqui
+# para que ninguna afirmacion del dashboard quede desfasada al cambiar de trimestre.
+def _pct(sheet, cat):
+    for r in D[sheet]["rows"]:
+        if r["cat"].startswith(cat):
+            return r["pct"]
+    return None
+_ed = D["Edad"]["rows"]; _rg = D["Region"]["rows"]
+_emax = max(_ed, key=lambda r: r["tasa"]); _emin = min(_ed, key=lambda r: r["tasa"])
+_rmax = max(_rg, key=lambda r: r["tasa"]); _rmin = min(_rg, key=lambda r: r["tasa"])
+TXT.update({
+    "EDAD_MAX":   _es(_emax["tasa"]) + "%",
+    "EDAD_MAX_C": _emax["cat"].lower(),
+    "EDAD_MIN":   _es(_emin["tasa"]) + "%",
+    "EDAD_MIN_C": _emin["cat"].lower(),
+    "REG_PP":     _es(_rmax["tasa"] - _rmin["tasa"]),
+    "REG_MAX_C":  _rmax["cat"].replace("Región de", "").replace("Región del", "").strip(),
+    "REG_MIN_C":  _rmin["cat"].replace("Región de", "").replace("Región del", "").strip(),
+    "N_CES":      str(round(_pct("Condicion", "Cesante"))),
+    "N_1VEZ":     str(round(_pct("Condicion", "Busca"))),
+    "PCT_FINCON": _es(_pct("Motivo_termino", "Fin del contrato")) + "%",
+    "PCT_OCUP25": _es(_pct("Panel_situacion_2025", "Ocupado")) + "%",
+})
+D.pop("_panel", None)
 DATA_JS = json.dumps(D, ensure_ascii=False)
 
 HTML = """<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Desempleo en Chile, más allá del 9,5%</title>
+<title>Desempleo en Chile, más allá del __TD__</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 :root{
@@ -295,14 +368,14 @@ section[hidden]{display:none}
 <div class="hero">
   <div class="wrap">
     <p class="kicker">Encuesta Nacional de Empleo · INE Chile · Trimestre móvil mayo–julio 2026</p>
-    <h1>Desempleo en Chile,<br>más allá del <em>9,5%</em></h1>
-    <p class="sub">981 mil personas desocupadas detrás de una sola cifra. Quiénes son, cuánto llevan buscando,
+    <h1>Desempleo en Chile,<br>más allá del <em>__TD__</em></h1>
+    <p class="sub">__DESOC_MIL__ personas desocupadas detrás de una sola cifra. Quiénes son, cuánto llevan buscando,
        por qué dejaron su último empleo y —gracias a la estructura de panel de la ENE— dónde estaban hace exactamente un año.</p>
     <div id="gh_hero"></div>
     <div class="kpis" id="kpis"></div>
     <div class="herochart">
       <h2>Dieciséis años de desempleo, mes a mes</h2>
-      <p class="lead">Tasa de desocupación (línea) y número de personas desocupadas (área), trimestres móviles desde 2010 hasta MJJ 2026.</p>
+      <p class="lead">Tasa de desocupación (línea) y número de personas desocupadas (área), trimestres móviles desde 2010 hasta __TRIM__.</p>
       <div class="tabs" id="rangeTabs"></div>
       <div class="cw" style="height:330px"><canvas id="serie"></canvas></div>
       <p class="caption" id="serieCaption"></p>
@@ -317,13 +390,13 @@ section[hidden]{display:none}
 
 <section>
   <div class="shead"><div class="num">01</div><h2>Quiénes están desocupados</h2>
-  <p>La tasa agregada esconde diferencias grandes: por edad va de 24% a menos de 6%, y entre regiones hay más de siete puntos de distancia.</p></div>
-  <div class="callout">De cada 100 personas desocupadas, <b>91 son cesantes</b> —perdieron o dejaron un empleo que ya tenían— y solo
-    <b>9 buscan trabajo por primera vez</b>. El desempleo chileno es, sobre todo, un problema de reinserción.</div>
+  <p>La tasa agregada esconde diferencias grandes: por edad va de __EDAD_MAX__ entre quienes tienen __EDAD_MAX_C__ a __EDAD_MIN__ entre quienes tienen __EDAD_MIN_C__, y entre regiones hay __REG_PP__ puntos de distancia entre __REG_MAX_C__ y __REG_MIN_C__.</p></div>
+  <div class="callout">De cada 100 personas desocupadas, <b>__N_CES__ son cesantes</b> —perdieron o dejaron un empleo que ya tenían— y solo
+    <b>__N_1VEZ__ buscan trabajo por primera vez</b>. El desempleo chileno es, sobre todo, un problema de reinserción.</div>
   <div class="grid g2">
     <div class="card"><h3>Sexo</h3><p class="hint">Tasa de desocupación, %</p><div class="cw" style="height:170px"><canvas id="c_sexo"></canvas></div></div>
     <div class="card"><h3>Tramo de edad · tasa</h3><p class="hint">Tasa de desocupación de cada tramo, %</p><div class="cw" style="height:230px"><canvas id="c_edad"></canvas></div></div>
-    <div class="card"><h3>Tramo de edad · distribución</h3><p class="hint">Cómo se reparten las 981 mil personas desocupadas, %</p><div class="cw" style="height:230px"><canvas id="c_edad_d"></canvas></div></div>
+    <div class="card"><h3>Tramo de edad · distribución</h3><p class="hint">Cómo se reparten las __DESOC_MIL__ personas desocupadas, %</p><div class="cw" style="height:230px"><canvas id="c_edad_d"></canvas></div></div>
     <div class="card span"><h3>Región</h3><p class="hint">Tasa de desocupación, % — ordenada de mayor a menor</p><div class="cw" style="height:300px"><canvas id="c_region"></canvas></div></div>
     <div class="card span"><h3>Provincia</h3>
       <p class="hint">Tasa de desocupación, % — la ENE tiene representatividad regional, no provincial: leer con cautela</p>
@@ -368,7 +441,7 @@ section[hidden]{display:none}
 
 <section data-tab="Por qué terminó el empleo">
   <div class="shead"><div class="num">03</div><h2>Por qué terminó el último empleo</h2>
-  <p>Entre las personas cesantes, seis de cada diez salieron por el fin de un contrato, una faena o una temporada: el desempleo llega, la mayoría de las veces, por la vía del empleo temporal.</p></div>
+  <p>Entre las personas cesantes, el __PCT_FINCON__ salió por el fin de un contrato, una faena o una temporada: el desempleo llega, la mayoría de las veces, por la vía del empleo temporal.</p></div>
   <div class="grid g2">
     <div class="card span"><h3>Motivo de término del último empleo</h3><p class="hint">% de las personas cesantes</p><div id="t_mot"></div></div>
     <div class="card"><h3>Si fue despido, ¿por qué?</h3><div id="t_desp"></div></div>
@@ -377,10 +450,10 @@ section[hidden]{display:none}
 </section>
 
 <section data-tab="De dónde vienen">
-  <div class="shead"><div class="num">04</div><h2>De dónde vienen: el panel MJJ 2025 → MJJ 2026</h2>
+  <div class="shead"><div class="num">04</div><h2>De dónde vienen: el panel __TRIM_PREV__ → __TRIM__</h2>
   <p>La ENE reentrevista a cada persona doce meses después. Enlazando ambas olas se recupera algo que el corte transversal no puede
      mostrar: la situación laboral de las personas hoy desocupadas exactamente un año antes.</p></div>
-  <div class="callout">Menos de la mitad —<b>46%</b>— de quienes hoy están desocupados estaba ocupado hace un año.
+  <div class="callout">Menos de la mitad —<b>__PCT_OCUP25__</b>— de quienes hoy están desocupados estaba ocupado hace un año.
     Un <b>23%</b> ya estaba desocupado y un <b>31%</b> estaba fuera de la fuerza de trabajo.
     El desempleo actual no es solo empleo perdido: también es desempleo que persiste y entrada al mercado laboral.</div>
   <div class="grid g2">
@@ -413,12 +486,12 @@ Chart.defaults.maintainAspectRatio = false;
 /* ---- KPIs ---- */
 const R = D.Resumen;
 const kpi = [
-  ['9,5%','Tasa de desocupación MJJ 2026'],
+  ['__TD__','Tasa de desocupación __TRIM__'],
   [F(R['Personas desocupadas']),'Personas desocupadas'],
-  [F(R['Cesantes']),'Cesantes (91,1%)'],
+  [F(R['Cesantes']),'Cesantes (__PCT_CES__)'],
   [F(R['Buscan trabajo por primera vez']),'Buscan trabajo por 1ª vez'],
   [F(R['Fuerza de trabajo']),'Fuerza de trabajo'],
-  ['4.412','Casos muestrales']
+  ['__CASOS_DES__','Casos muestrales']
 ];
 document.getElementById('kpis').innerHTML = kpi.map(k=>`<div class="kpi"><b>${k[0]}</b><span>${k[1]}</span></div>`).join('');
 
@@ -486,17 +559,20 @@ function drawSerie(r){
     `(${sg(dif)} puntos porcentuales) y las personas desocupadas, de ${F(pri.d)} a ${F(ult.d)} (${sgn(difn)}).`;
 }
 /* El Gobierno de José Antonio Kast asumió el 11 de marzo de 2026. El punto de partida (mes 0) es
-   DEF 2026 —el trimestre móvil diciembre-enero-febrero, último dato previo a la asunción— y los
-   cinco meses acumulados llegan hasta MJJ 2026, publicado por el INE el 28 de agosto de 2026. */
+   DEF 2026 —el trimestre móvil diciembre-enero-febrero, último dato previo a la asunción— y la
+   pestaña acumula desde ahí hasta el último trimestre disponible. El conteo se calcula solo, para
+   que no haya que tocarlo cada vez que el INE publica un trimestre nuevo. */
+const kast = S.filter(x => x.a > 2026 || (x.a === 2026 && x.m >= 2));
+const NUM = ['cero','un','dos','tres','cuatro','cinco','seis','siete','ocho','nueve','diez','once','doce'];
 const rangos=[
   {from:[2010,1], lab:'2010–2026'},
   {from:[2016,1], lab:'Últimos 10 años'},
   {from:[2020,1], lab:'Desde la pandemia'},
   {from:[2024,1], lab:'Últimos 3 años'},
   {from:[2026,2], lab:'Gobierno Kast', cls:'kast', mesIni:1,
-   cap:'El Gobierno de José Antonio Kast asumió el 11 de marzo de 2026. Se muestran los cinco '+
-       'trimestres móviles del período, desde EFM 2026 hasta MJJ 2026, dato publicado por el INE '+
-       'el 28 de agosto de 2026.'}
+   cap:'El Gobierno de José Antonio Kast asumió el 11 de marzo de 2026. Se muestran los '+
+       (NUM[kast.length] || kast.length)+' trimestres móviles del período, desde '+kast[0].lab+
+       ' hasta '+kast[kast.length-1].lab+', dato publicado por el INE el __FECHA_PUB__.'}
 ];
 document.getElementById('rangeTabs').innerHTML = rangos.map((r,i)=>
   `<div class="tab ${r.cls||''}${i?'':' on'}" data-i="${i}">${r.lab}</div>`).join('');
@@ -669,14 +745,19 @@ tabla('t_psec','Panel_sector_inst_2025',{color:A3});
 
 /* ---- notas ---- */
 document.getElementById('notas').innerHTML = `<h3>Nota metodológica</h3>
-<p><b>Fuente.</b> Microdatos de la Encuesta Nacional de Empleo (ENE), Instituto Nacional de Estadísticas de Chile. El corte principal es el trimestre móvil mayo–junio–julio de 2026 (97.946 personas encuestadas). La serie histórica cubre todos los trimestres móviles disponibles desde 2010 hasta MJJ 2026 (${S.length} trimestres).</p>
+<p><b>Fuente.</b> Microdatos de la Encuesta Nacional de Empleo (ENE), Instituto Nacional de Estadísticas de Chile. El corte principal es el trimestre móvil __TRIM_LARGO__ (__CASOS_ENC__ personas encuestadas), publicado por el INE el __FECHA_PUB__. La serie histórica cubre todos los trimestres móviles disponibles desde 2010 hasta __TRIM__ (${S.length} trimestres).</p>
 <p><b>Definiciones.</b> Se considera desocupada a la persona sin empleo que buscó trabajo en las últimas cuatro semanas y está disponible para trabajar (marco conceptual de la OIT, 19ª CIET). Dentro de ese grupo se distingue a las personas cesantes, con experiencia laboral previa, de quienes buscan trabajo por primera vez. La tasa de desocupación es el cociente entre personas desocupadas y fuerza de trabajo. Todas las cifras de personas están expandidas con el factor trimestral <code>fact_cal</code>.</p>
-<p><b>Panel.</b> La ENE es un panel rotativo: cada persona se entrevista tres meses seguidos, sale de la muestra y vuelve doce meses después. El enlace entre MJJ 2025 y MJJ 2026 se hace por identificador de persona contra el mismo mes calendario, validando igual sexo y una diferencia de edad de cero a dos años. Quedan 25.486 pares válidos, de los cuales 1.086 corresponden a personas desocupadas en 2026 (24,6% del total). <b>La submuestra panel no tiene diseño muestral ni factores de expansión propios</b>: las cifras expandidas son solo indicativas, la distribución porcentual es la lectura recomendada y no corresponde presentarlas como estimaciones oficiales del INE.</p>
-<p><b>Larga duración.</b> La serie trimestral de episodios de doce meses o más se construye desde los microdatos de cada trimestre móvil, no desde el corte de MJJ 2026. La duración se calcula contra el mes y año que declara la persona: el inicio de la búsqueda (e6) para las personas desocupadas y el término del último empleo (e21, disponible desde el cuestionario de julio de 2020) para las cesantes. Una fracción variable de las respuestas entrega el año pero no el mes, así que la clasificación se resuelve por la brecha de años —mismo año, menos de doce meses; dos años o más, doce meses o más— y solo queda por imputar el caso de exactamente un año de diferencia sin mes declarado, al que se le asigna la proporción que corresponde suponiendo el mes uniforme dentro del año. Ese grupo pesa alrededor del 1% de la muestra, salvo entre diciembre de 2023 y diciembre de 2024, cuando una ola de no respuesta del mes en la pregunta e21 lo lleva hasta la mitad de las personas cesantes: el nivel de esa línea en ese tramo debe leerse con cautela. Como el procedimiento recupera casos que la tabla de tramos deja en "no declarado", y esos casos son sobre todo episodios largos, los porcentajes de la serie son algo más altos que los del tabulado transversal.</p>
+<p><b>Panel.</b> La ENE es un panel rotativo: cada persona se entrevista tres meses seguidos, sale de la muestra y vuelve doce meses después. El enlace entre __TRIM_PREV__ y __TRIM__ se hace por identificador de persona contra el mismo mes calendario, validando igual sexo y una diferencia de edad de cero a dos años. Quedan __PANEL_PARES__ pares válidos, de los cuales __PANEL_CASOS__ corresponden a personas desocupadas en __ANO__ (__PANEL_PCT__ del total). <b>La submuestra panel no tiene diseño muestral ni factores de expansión propios</b>: las cifras expandidas son solo indicativas, la distribución porcentual es la lectura recomendada y no corresponde presentarlas como estimaciones oficiales del INE.</p>
+<p><b>Larga duración.</b> La serie trimestral de episodios de doce meses o más se construye desde los microdatos de cada trimestre móvil, no desde el corte de __TRIM__. La duración se calcula contra el mes y año que declara la persona: el inicio de la búsqueda (e6) para las personas desocupadas y el término del último empleo (e21, disponible desde el cuestionario de julio de 2020) para las cesantes. Una fracción variable de las respuestas entrega el año pero no el mes, así que la clasificación se resuelve por la brecha de años —mismo año, menos de doce meses; dos años o más, doce meses o más— y solo queda por imputar el caso de exactamente un año de diferencia sin mes declarado, al que se le asigna la proporción que corresponde suponiendo el mes uniforme dentro del año. Ese grupo pesa alrededor del 1% de la muestra, salvo entre diciembre de 2023 y diciembre de 2024, cuando una ola de no respuesta del mes en la pregunta e21 lo lleva hasta la mitad de las personas cesantes: el nivel de esa línea en ese tramo debe leerse con cautela. Como el procedimiento recupera casos que la tabla de tramos deja en "no declarado", y esos casos son sobre todo episodios largos, los porcentajes de la serie son algo más altos que los del tabulado transversal.</p>
 <p><b>Precisión.</b> Las columnas de casos muestrales se muestran junto a cada porcentaje porque en las desagregaciones más finas el número de observaciones es pequeño: conviene ser cauto con cualquier categoría bajo 50 casos. Los métodos de búsqueda son de respuesta múltiple, por lo que sus porcentajes no suman cien.</p>`;
 </script>
 """
 
 html = HTML.replace("__DATA__", DATA_JS).replace("__REPO__", REPO)
+for k, v in TXT.items():
+    html = html.replace("__%s__" % k, str(v))
+sobrantes = sorted(set(re.findall(r"__[A-Z_]+__", html)))
+if sobrantes:
+    raise SystemExit(f"Marcadores sin reemplazar: {sobrantes}")
 open(OUT, "w", encoding="utf-8").write(html)
 print(f"escrito {OUT} ({len(html):,} caracteres, {len(D['serie'])} trimestres)")

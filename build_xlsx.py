@@ -10,7 +10,31 @@ from openpyxl.utils import get_column_letter
 # Los microdatos no viajan en el repositorio: se esperan en ./data con la particion
 # original ano=/mes_central=, o en la ruta que indique la variable de entorno ENE_DATA.
 BASE = os.environ.get("ENE_DATA", "data")
-ANIO, MES = 2026, 6
+# Trimestre movil a procesar. MES es el mes central: 1 = DEF, 6 = MJJ, 7 = JJA, etc.
+# Se puede cambiar sin tocar el codigo:  ENE_ANIO=2026 ENE_MES=7 python3 build_xlsx.py
+ANIO = int(os.environ.get("ENE_ANIO", 2026))
+MES  = int(os.environ.get("ENE_MES", 7))
+
+_SIGLA = {1:"DEF",2:"EFM",3:"FMA",4:"MAM",5:"AMJ",6:"MJJ",
+          7:"JJA",8:"JAS",9:"ASO",10:"SON",11:"OND",12:"NDE"}
+_MESES = {1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",
+          7:"julio",8:"agosto",9:"septiembre",10:"octubre",11:"noviembre",12:"diciembre"}
+TRIM       = f"{_SIGLA[MES]} {ANIO}"        # p. ej. "JJA 2026"
+TRIM_PREV  = f"{_SIGLA[MES]} {ANIO-1}"      # la ola del panel, 12 meses antes
+MES_NOMBRE = _MESES[MES]
+# Nombre largo del trimestre movil: los tres meses centrados en MES.
+TRIM_LARGO = "-".join(_MESES[(MES - 2 + k) % 12 + 1] for k in range(3)) + f" {ANIO}"
+# Los tres meses calendario que se enlazan con la ola anterior.
+_M3 = [_MESES[(MES - 2 + k) % 12 + 1] for k in range(3)]
+MESES_ENLACE = ", ".join(f"{m} con {m}" for m in _M3)
+
+def T(s):
+    """Sustituye el trimestre de referencia en los textos del archivo."""
+    return (s.replace("MJJ 2026", TRIM).replace("MJJ 2025", TRIM_PREV)
+             .replace("mayo-junio-julio 2026", TRIM_LARGO)
+             .replace("mes central: junio", f"mes central: {MES_NOMBRE}")
+             .replace("mayo con mayo, junio con junio, julio con julio", MESES_ENLACE))
+
 ene = pq.read_table(f"{BASE}/ano={ANIO}/mes_central={MES}/part-0.parquet").to_pandas()
 
 lab_sexo = {1: "Hombre", 2: "Mujer"}
@@ -312,6 +336,8 @@ TOPB = Border(top=Side(style="thin"))
 
 def hoja(nombre, titulo, tab, tasa, nota=None, multiple=False, pct="% del total de desocupados"):
     ws = wb.create_sheet(nombre)
+    titulo = T(titulo)
+    if nota: nota = T(nota)
     ws["A1"] = titulo; ws["A1"].font = F_TIT
     hdr = ["Categoría","Casos muestrales","Personas desocupadas", pct]
     if tasa: hdr += ["Fuerza de trabajo","Tasa de desocupación (%)"]
@@ -361,7 +387,7 @@ def hoja(nombre, titulo, tab, tasa, nota=None, multiple=False, pct="% del total 
 ws = wb.create_sheet("Notas")
 notas = ["Caracterización de las personas desocupadas - ENE, trimestre móvil mayo-junio-julio 2026","",
 "Fuente: Instituto Nacional de Estadísticas (INE), Encuesta Nacional de Empleo (ENE), microdatos.",
-"Elaboración propia. Trimestre móvil MJJ 2026 (mes central: junio). Muestra: 97.946 personas.","",
+f"Elaboración propia. Trimestre móvil MJJ 2026 (mes central: junio). Muestra: {tot['casos_muestra']:,} personas.".replace(",", "."),"",
 "DEFINICIONES",
 "Población en edad de trabajar (PET): personas de 15 años y más.",
 "Fuerza de trabajo: personas ocupadas más personas desocupadas (ft = 1).",
@@ -407,14 +433,14 @@ f"({pan['casos']/tot['casos_desoc']*100:.1f}%) tienen dato de 2025.",
 "Variables de 2025 utilizadas: activ y cae_general (situación laboral); r_p_rev4cl_caenes (rama CAENES);",
 "   categoria_ocupacion; ocup_form (formalidad); sector (sector institucional); b8 y b9 (contrato).",
 "",
-"Script que genera este archivo: ene_empleo_microdatos/desocupados_mjj2026.R"]
+"Script que genera este archivo: ene_empleo_microdatos/build_xlsx.py"]
 for i, t in enumerate(notas, 1):
-    c = ws.cell(i, 1, t); c.font = F_TXT
+    c = ws.cell(i, 1, T(t)); c.font = F_TXT
 ws["A1"].font = F_TIT
 ws.column_dimensions["A"].width = 105
 
 ws = wb.create_sheet("Resumen")
-ws["A1"] = "Resumen - personas desocupadas, ENE MJJ 2026"; ws["A1"].font = F_TIT
+ws["A1"] = T("Resumen - personas desocupadas, ENE MJJ 2026"); ws["A1"].font = F_TIT
 for j, h in enumerate(["Indicador","Valor"], 1):
     c = ws.cell(3, j, h); c.font = F_HDR; c.fill = FILL; c.border = BRD
     c.alignment = Alignment(horizontal="center", vertical="center")
@@ -506,6 +532,6 @@ hoja("Panel_sector_inst_2025",
      f"({pan['ocup']} casos). Variable sector: unidad productiva formal, informal u hogares. "
      + NOTA_PANEL, pct="% de quienes estaban ocupados/as")
 
-out = "desocupados_mjj2026.xlsx"
+out = f"desocupados_{_SIGLA[MES].lower()}{ANIO}.xlsx"
 wb.save(out)
 print("OK", out)
