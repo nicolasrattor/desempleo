@@ -37,7 +37,7 @@ XL   = os.environ.get("ENE_XLSX") or _ultimo_xlsx()
 OUT  = "dashboard_desempleo.html"
 REPO = "https://github.com/nicolasrattor/desempleo"
 # Fecha en que el INE publico el trimestre de referencia: se actualiza a mano cada vez.
-FECHA_PUB = os.environ.get("ENE_FECHA_PUB", "30 de septiembre de 2026")
+FECHA_PUB = os.environ.get("ENE_FECHA_PUB", "29 de octubre de 2026")
 
 # ---------------------------------------------------------------- serie 2010-2026
 def serie_historica():
