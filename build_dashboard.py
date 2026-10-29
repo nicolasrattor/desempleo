@@ -138,39 +138,38 @@ def serie_profesional(desde=2020):
                           n=int(len(prof_d))))
     return filas
 
-# ------------------------------------------------- serie panel: situacion 12 meses antes
-PANEL_CATS = ["ocu", "ces", "pri", "ftp", "ina"]
-def serie_panel():
-    """Para cada trimestre movil, situacion laboral doce meses antes de las personas
-    hoy desocupadas. Replica el enlace del modulo panel del Excel: mismo idrph, mismo mes
-    calendario de entrevista, mismo sexo y diferencia de edad de 0 a 2 anos. Los
-    porcentajes se ponderan con fact_cal del trimestre actual.
-
-    El INE renovo el identificador de persona con el cambio de marco muestral de 2020,
-    por lo que los trimestres DEF 2020 a SON 2020 no tienen pares enlazables; quedan
-    como hueco en la serie (valores nulos)."""
-    C = ["idrph", "activ", "sexo", "edad", "cae_general", "mes_encuesta", "fact_cal"]
+# ------------------------------------- serie panel por sector: de donde vienen, en miles
+PANEL_SECT = {7: "Comercio", 6: "Construcción", 3: "Industria manufacturera",
+              14: "Serv. administrativos y de apoyo"}
+def serie_panel_sector(desde=2022):
+    """Personas desocupadas de cada trimestre movil que estaban ocupadas doce meses antes,
+    segun la rama de actividad de ese empleo (r_p_rev4cl_caenes de la ola anterior), en
+    miles. Replica el enlace del modulo panel del Excel (mismo idrph, mismo mes calendario,
+    mismo sexo, diferencia de edad de 0 a 2 anos). El peso de cada rama dentro de las
+    personas desocupadas enlazadas se ponderan con fact_cal del trimestre actual y se
+    multiplica por el total de personas desocupadas del trimestre."""
+    C = ["idrph", "activ", "sexo", "edad", "mes_encuesta", "fact_cal"]
     fs = {tuple(int(x) for x in re.search(r"ano=(\d+)/mes_central=(\d+)", f).groups()): f
           for f in glob.glob(f"{BASE}/ano=*/mes_central=*/part-0.parquet")}
     filas = []
     for (a, m) in sorted(fs):
-        if (a - 1, m) not in fs:
+        if a < desde or (a - 1, m) not in fs:
             continue
         cur = pq.read_table(fs[(a, m)], columns=C).to_pandas()
         cur = cur[cur.activ == 2]
-        prev = pq.read_table(fs[(a - 1, m)], columns=C).to_pandas()
+        prev = pq.read_table(fs[(a - 1, m)], columns=C + ["r_p_rev4cl_caenes"]).to_pandas()
         prev = prev.rename(columns={c: c + "_p" for c in C if c != "idrph"})
         p = cur.merge(prev, on="idrph")
         p = p[(p.mes_encuesta == p.mes_encuesta_p) & (p.sexo == p.sexo_p) &
-              (p.edad - p.edad_p).between(0, 2)].copy()
-        p["s"] = np.select([p.activ_p == 1, p.cae_general_p == 4, p.cae_general_p == 5,
-                            p.cae_general_p.isin([6, 7, 8]), p.cae_general_p == 9],
-                           PANEL_CATS, default="nc")
-        p = p[p.s != "nc"]
-        fila = dict(a=a, m=m, n=int(len(p)), cob=round(len(p) / len(cur) * 100, 1))
-        w = p.groupby("s").fact_cal.sum(); tot = w.sum()
-        for k in PANEL_CATS:
-            fila[k] = round(float(w.get(k, 0)) / tot * 100, 2) if len(p) else None
+              (p.edad - p.edad_p).between(0, 2)]
+        tot, D = p.fact_cal.sum(), cur.fact_cal.sum()
+        e = p[p.activ_p == 1]
+        fila = dict(a=a, m=m, n=int(len(p)))
+        for cod, nom in PANEL_SECT.items():
+            x = e[e.r_p_rev4cl_caenes == cod]
+            fila[f"s{cod}"] = round(x.fact_cal.sum() / tot * D / 1000, 1)
+            fila[f"c{cod}"] = int(len(x))
+        fila["ocu"] = round(e.fact_cal.sum() / tot * D / 1000, 1)
         filas.append(fila)
     return filas
 
@@ -231,7 +230,7 @@ D["serie"] = [dict(a=int(r.ano), m=int(r.mes_central),
               for r in s.itertuples()]
 D["serie_dur"] = [dict(lab=f"{MES[x['m']]} {x['a']}", **x) for x in serie_duracion()]
 D["serie_prof"] = [dict(lab=f"{MES[x['m']]} {x['a']}", **x) for x in serie_profesional()]
-D["serie_panel"] = [dict(lab=f"{MES[x['m']]} {x['a']}", **x) for x in serie_panel()]
+D["serie_psect"] = [dict(lab=f"{MES[x['m']]} {x['a']}", **x) for x in serie_panel_sector()]
 
 # ------------------------------------------------- textos que dependen del trimestre
 _MESL = {1:"enero",2:"febrero",3:"marzo",4:"abril",5:"mayo",6:"junio",
@@ -500,8 +499,8 @@ section[hidden]{display:none}
     El desempleo actual no es solo empleo perdido: también es desempleo que persiste y entrada al mercado laboral.</div>
   <div class="grid g2">
     <div class="card span"><h3>¿En qué situación estaban en __TRIM_PREV__?</h3><p class="hint">% de las __PANEL_CASOS__ personas desocupadas de __TRIM__ enlazadas con __TRIM_PREV__</p><div class="cw" style="height:210px"><canvas id="c_psit"></canvas></div></div>
-    <div class="card span"><h3>¿Dónde estaban un año antes? Trimestre a trimestre</h3>
-      <p class="hint">Situación laboral doce meses antes de las personas desocupadas de cada trimestre móvil, % de las personas enlazadas en el panel.</p>
+    <div class="card span"><h3>¿De qué sector vienen? Trimestre a trimestre</h3>
+      <p class="hint">Personas desocupadas de cada trimestre móvil que estaban ocupadas un año antes, según la rama de actividad de ese empleo, en miles. Los cuatro sectores principales, desde 2022.</p>
       <div class="cw" style="height:320px"><canvas id="c_ppanel"></canvas></div>
       <p class="caption" id="ppanelCaption"></p>
     </div>
@@ -746,34 +745,29 @@ const pr = D.Panel_rama_2025.rows.filter(r=>r.n>0).sort((a,b)=>b.pct-a.pct);
 barH('c_prama', pr.map(r=>r.cat.replace(/^[A-Z]{1,2}\\. /,'')), pr.map(r=>r.pct), A1);
 tabla('t_pcon','Panel_contrato_2025',{color:A1});
 {
-  const SP = D.serie_panel;
-  const def = [['ocu','Ocupado/a',A3,[]],['ces','Desocupado/a: cesante',A2,[]],
-               ['pri','Desocupado/a: busca por primera vez',A2,[4,3]],
-               ['ftp','Fuera de la FT: fuerza de trabajo potencial',A4,[]],
-               ['ina','Fuera de la FT: resto',A5,[]]];
+  const SP = D.serie_psect;
+  const def = [['s7','Comercio',A3],['s6','Construcción',A2],['s3','Industria manufacturera',A4],
+               ['s14','Serv. administrativos y de apoyo',A5]];
   new Chart(document.getElementById('c_ppanel'),{type:'line',
-    data:{labels:SP.map(x=>x.lab),datasets:def.map(([k,l,c,d])=>({label:l,data:SP.map(x=>x[k]),
-      borderColor:c,backgroundColor:c,borderDash:d,borderWidth:k==='ocu'?2.6:1.8,pointRadius:0,
-      pointHoverRadius:4,tension:.25,spanGaps:false}))},
+    data:{labels:SP.map(x=>x.lab),datasets:def.map(([k,l,c])=>({label:l,data:SP.map(x=>x[k]),
+      borderColor:c,backgroundColor:c,borderWidth:2.2,pointRadius:0,pointHoverRadius:4,tension:.25}))},
     options:{...baseOpts,interaction:{mode:'index',intersect:false},
-     scales:{x:{grid:{display:false},border:{color:LINE},ticks:{maxTicksLimit:14,maxRotation:0}},
-             y:{beginAtZero:true,grid:{color:LINE},border:{display:false},ticks:{callback:v=>v+'%'}}},
+     scales:{x:{grid:{display:false},border:{color:LINE},ticks:{maxTicksLimit:12,maxRotation:0}},
+             y:{beginAtZero:true,grid:{color:LINE},border:{display:false},ticks:{callback:v=>v+' mil'}}},
      plugins:{...baseOpts.plugins,
        legend:{display:true,position:'top',align:'start',
                labels:{boxWidth:10,boxHeight:10,usePointStyle:true,pointStyle:'circle',padding:12}},
        tooltip:{...baseOpts.plugins.tooltip,callbacks:{
-         label:c=>c.raw==null?null:def[c.datasetIndex][1]+': '+P(c.raw)+'%',
-         afterBody:it=>{const x=SP[it[0].dataIndex];return x.n?'Casos enlazados: '+F(x.n):'Sin enlace posible'}}}}}});
-  const ok = SP.filter(x=>x.ocu!=null), u = ok[ok.length-1];
-  const mx = ok.reduce((m,x)=>x.ocu>m.ocu?x:m,ok[0]), mn = ok.reduce((m,x)=>x.ocu<m.ocu?x:m,ok[0]);
-  const prom = ok.reduce((s,x)=>s+x.ocu,0)/ok.length;
+         label:c=>{const x=SP[c.dataIndex],k=def[c.datasetIndex][0];
+                   return def[c.datasetIndex][1]+': '+P(c.raw)+' mil ('+x['c'+k.slice(1)]+' casos)'}}}}}});
+  const u = SP[SP.length-1], a = SP.find(x=>x.a===u.a-1 && x.m===u.m);
+  const dif = k=>{const d=u[k]-a[k];return (d>=0?'+':'−')+P(Math.abs(d))+' mil'};
   document.getElementById('ppanelCaption').innerHTML =
-    `En ${u.lab} el ${P(u.ocu)}% de las personas desocupadas estaba ocupada un año antes; el promedio de la serie es ` +
-    `${P(prom)}%, con un máximo de ${P(mx.ocu)}% en ${mx.lab} y un mínimo de ${P(mn.ocu)}% en ${mn.lab}. ` +
-    `Cada punto enlaza el trimestre con el mismo trimestre del año anterior (entre ${F(Math.min(...ok.map(x=>x.n)))} y ` +
-    `${F(Math.max(...ok.map(x=>x.n)))} personas desocupadas por trimestre), así que las oscilaciones de uno o dos puntos son ruido muestral. ` +
-    `El hueco de 2020 no es un error: con el cambio de marco muestral el INE renovó el identificador de persona y ` +
-    `no es posible enlazar esos trimestres con los de 2019.`;
+    `En ${u.lab}, ${P(u.ocu)} mil personas desocupadas tenían empleo un año antes. Frente a ${a.lab}, ` +
+    `las que venían de comercio cambian ${dif('s7')}, de construcción ${dif('s6')}, de industria ${dif('s3')} y ` +
+    `de servicios administrativos ${dif('s14')}. Cada punto descansa en pocos casos muestrales ` +
+    `(entre ${Math.min(...SP.map(x=>x.c14))} y ${Math.max(...SP.map(x=>x.c7))} por sector y trimestre; ver el tooltip), ` +
+    `así que solo los movimientos sostenidos por varios trimestres deben leerse como señal.`;
 }
 tabla('t_pcat','Panel_categoria_2025',{sort:true,color:A1});
 tabla('t_pfor','Panel_formalidad_2025',{color:A2});
@@ -824,7 +818,7 @@ tabla('t_psec','Panel_sector_inst_2025',{color:A3});
 document.getElementById('notas').innerHTML = `<h3>Nota metodológica</h3>
 <p><b>Fuente.</b> Microdatos de la Encuesta Nacional de Empleo (ENE), Instituto Nacional de Estadísticas de Chile. El corte principal es el trimestre móvil __TRIM_LARGO__ (__CASOS_ENC__ personas encuestadas), publicado por el INE el __FECHA_PUB__. La serie histórica cubre todos los trimestres móviles disponibles desde 2010 hasta __TRIM__ (${S.length} trimestres).</p>
 <p><b>Definiciones.</b> Se considera desocupada a la persona sin empleo que buscó trabajo en las últimas cuatro semanas y está disponible para trabajar (marco conceptual de la OIT, 19ª CIET). Dentro de ese grupo se distingue a las personas cesantes, con experiencia laboral previa, de quienes buscan trabajo por primera vez. La tasa de desocupación es el cociente entre personas desocupadas y fuerza de trabajo. Todas las cifras de personas están expandidas con el factor trimestral <code>fact_cal</code>.</p>
-<p><b>Panel.</b> La ENE es un panel rotativo: cada persona se entrevista tres meses seguidos, sale de la muestra y vuelve doce meses después. El enlace entre __TRIM_PREV__ y __TRIM__ se hace por identificador de persona contra el mismo mes calendario, validando igual sexo y una diferencia de edad de cero a dos años. Quedan __PANEL_PARES__ pares válidos, de los cuales __PANEL_CASOS__ corresponden a personas desocupadas en __ANO__ (__PANEL_PCT__ del total). <b>La submuestra panel no tiene diseño muestral ni factores de expansión propios</b>: las cifras expandidas son solo indicativas, la distribución porcentual es la lectura recomendada y no corresponde presentarlas como estimaciones oficiales del INE. La serie trimestral del panel repite el mismo enlace para cada trimestre móvil desde 2011 contra el mismo trimestre del año anterior; entre DEF y SON 2020 no hay pares enlazables porque el identificador de persona cambió con el nuevo marco muestral, y en los trimestres vecinos a ese cambio (fines de 2019, 2021) la cobertura del enlace es menor.</p>
+<p><b>Panel.</b> La ENE es un panel rotativo: cada persona se entrevista tres meses seguidos, sale de la muestra y vuelve doce meses después. El enlace entre __TRIM_PREV__ y __TRIM__ se hace por identificador de persona contra el mismo mes calendario, validando igual sexo y una diferencia de edad de cero a dos años. Quedan __PANEL_PARES__ pares válidos, de los cuales __PANEL_CASOS__ corresponden a personas desocupadas en __ANO__ (__PANEL_PCT__ del total). <b>La submuestra panel no tiene diseño muestral ni factores de expansión propios</b>: las cifras expandidas son solo indicativas, la distribución porcentual es la lectura recomendada y no corresponde presentarlas como estimaciones oficiales del INE. La serie trimestral por sector repite el mismo enlace para cada trimestre móvil desde 2022 contra el mismo trimestre del año anterior: toma a las personas desocupadas que estaban ocupadas un año antes, las reparte según la rama de actividad de ese empleo y lleva ese reparto a miles multiplicándolo por el total de personas desocupadas del trimestre.</p>
 <p><b>Larga duración.</b> La serie trimestral de episodios de doce meses o más se construye desde los microdatos de cada trimestre móvil, no desde el corte de __TRIM__. La duración se calcula contra el mes y año que declara la persona: el inicio de la búsqueda (e6) para las personas desocupadas y el término del último empleo (e21, disponible desde el cuestionario de julio de 2020) para las cesantes. Una fracción variable de las respuestas entrega el año pero no el mes, así que la clasificación se resuelve por la brecha de años —mismo año, menos de doce meses; dos años o más, doce meses o más— y solo queda por imputar el caso de exactamente un año de diferencia sin mes declarado, al que se le asigna la proporción que corresponde suponiendo el mes uniforme dentro del año. Ese grupo pesa alrededor del 1% de la muestra, salvo entre diciembre de 2023 y diciembre de 2024, cuando una ola de no respuesta del mes en la pregunta e21 lo lleva hasta la mitad de las personas cesantes: el nivel de esa línea en ese tramo debe leerse con cautela. Como el procedimiento recupera casos que la tabla de tramos deja en "no declarado", y esos casos son sobre todo episodios largos, los porcentajes de la serie son algo más altos que los del tabulado transversal.</p>
 <p><b>Precisión.</b> Las columnas de casos muestrales se muestran junto a cada porcentaje porque en las desagregaciones más finas el número de observaciones es pequeño: conviene ser cauto con cualquier categoría bajo 50 casos. Los métodos de búsqueda son de respuesta múltiple, por lo que sus porcentajes no suman cien.</p>`;
 </script>
